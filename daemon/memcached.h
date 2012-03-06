@@ -69,6 +69,9 @@
 #define DEFAULT_REQS_PER_EVENT     20
 #define DEFAULT_REQS_PER_TAP_EVENT 50
 
+/*Maximum size for temporary buffer for cas*/
+#define MAX_CAS_BUF 100
+
 /** Append a simple stat with a stat name, value format and value */
 #define APPEND_STAT(name, fmt, val) \
     append_stat(name, add_stats, c, fmt, val);
@@ -348,6 +351,7 @@ struct conn {
 
     uint8_t refcount; /* number of references to the object */
 
+    bool returncas;   /* True if the cas should be sent. */
     struct {
         char *buffer;
         size_t size;

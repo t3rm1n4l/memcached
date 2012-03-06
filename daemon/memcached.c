@@ -624,6 +624,7 @@ conn *conn_new(const SOCKET sfd, STATE_FUNC init_state,
     c->msgused = 0;
     c->next = NULL;
     c->list_state = 0;
+    c->returncas  = false;
 
     c->write_and_go = init_state;
     c->write_and_free = 0;
@@ -1096,7 +1097,14 @@ static void complete_update_ascii(conn *c) {
 
     switch (ret) {
     case ENGINE_SUCCESS:
-        out_string(c, "STORED");
+        if (c->returncas) {
+            char buf[MAX_CAS_BUF];
+            sprintf(buf, "STORED %llu", (unsigned long long)c->cas);
+            out_string(c, buf);
+        }
+        else {
+            out_string(c, "STORED");
+        }
         break;
     case ENGINE_KEY_EEXISTS:
         out_string(c, "EXISTS");
@@ -3401,6 +3409,7 @@ static void reset_cmd_handler(conn *c) {
     c->ascii_cmd = NULL;
     c->cmd = -1;
     c->substate = bin_no_state;
+    c->returncas = false;
     if(c->item != NULL) {
         settings.engine.v1->release(settings.engine.v0, c, c->item);
         c->item = NULL;
@@ -3571,6 +3580,7 @@ static void write_and_free(conn *c, char *buf, int bytes) {
     }
 }
 
+/*checks for noreply and returning new cas. if returncas is set, return with new cas value*/
 static inline bool set_noreply_maybe(conn *c, token_t *tokens, size_t ntokens)
 {
     int noreply_index = ntokens - 2;
@@ -3582,9 +3592,12 @@ static inline bool set_noreply_maybe(conn *c, token_t *tokens, size_t ntokens)
       malformed line for "noreply" option is not reliable anyway, so
       it can't be helped.
     */
-    if (tokens[noreply_index].value
-        && strcmp(tokens[noreply_index].value, "noreply") == 0) {
-        c->noreply = true;
+    if (tokens[noreply_index].value) {
+        if (strcmp(tokens[noreply_index].value, "noreply") == 0) {
+            c->noreply = true;
+        } else if (strcmp(tokens[noreply_index].value, "returncas") == 0) {
+            c->returncas = true;
+        }
     }
     return c->noreply;
 }
