@@ -3,7 +3,7 @@
 #
 man_MANS = doc/memcached.1
 bin_PROGRAMS = engine_testapp memcached mcstat
-noinst_PROGRAMS = sizes testapp timedrun
+noinst_PROGRAMS = sizes testapp timedrun testasciiapp
 pkginclude_HEADERS = \
                      include/memcached/callback.h \
                      include/memcached/config_parser.h \
@@ -54,6 +54,7 @@ testapp_LDADD= libmemcached_utilities.la $(APPLICATION_LIBS)
 mcstat_SOURCES = programs/mcstat.c
 mcstat_LDADD = $(APPLICATION_LIBS)
 
+testasciiapp_SOURCES = programs/testappAscii.c
 
 # New and fancy test program to test engines without the need to run
 # everything through the network layer
