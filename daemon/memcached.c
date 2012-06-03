@@ -625,6 +625,7 @@ conn *conn_new(const SOCKET sfd, STATE_FUNC init_state,
     c->next = NULL;
     c->list_state = 0;
     c->returncas  = false;
+    c->cksumlen  = 0;
 
     c->write_and_go = init_state;
     c->write_and_free = 0;
@@ -1149,6 +1150,9 @@ static void complete_update_ascii(conn *c) {
         assert(false);
         c->state = conn_closing;
         break;
+    case ENGINE_CKSUM_FAILED:
+        out_string(c, "SERVER_ERROR checksum failed");
+        break;
 
     default:
         out_string(c, "SERVER_ERROR internal");
@@ -1192,10 +1196,22 @@ static void* binary_get_request(conn *c) {
 }
 
 /**
+ * get a pointer to the start of the request struct for the current command
+ * with checksum    
+ */
+static void* binary_get_request_with_cksum(conn *c) {
+    char *ret = c->rcurr;
+    ret -= (sizeof(c->binary_header) + c->binary_header.request.keylen +
+            c->binary_header.request.extlen + c->cksumlen);
+    assert(ret >= c->rbuf);
+    return ret;
+}
+
+/**
  * get a pointer to the key in this request
  */
 static char* binary_get_key(conn *c) {
-    return c->rcurr - (c->binary_header.request.keylen);
+    return c->rcurr - (c->binary_header.request.keylen + c->cksumlen);
 }
 
 /**
@@ -1413,7 +1429,9 @@ static void write_bin_packet(conn *c, protocol_binary_response_status err, int s
         len = snprintf(buffer, sizeof(buffer),
                        "I'm not responsible for this vbucket");
         break;
-
+    case PROTOCOL_BINARY_RESPONSE_CKSUM_FAILED:
+        len = snprintf(buffer, sizeof(buffer), "Checksum failed");
+        break;
     default:
         len = snprintf(buffer, sizeof(buffer), "UNHANDLED ERROR (%d)", err);
         settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
@@ -1637,6 +1655,9 @@ static void complete_update_bin(conn *c) {
     case ENGINE_NOT_MY_VBUCKET:
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_MY_VBUCKET, 0);
         break;
+    case ENGINE_CKSUM_FAILED:
+        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_CKSUM_FAILED, 0);
+        break;
     default:
         if (c->store_op == OPERATION_ADD) {
             eno = PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS;
@@ -1676,7 +1697,8 @@ static void complete_update_bin(conn *c) {
 static void process_bin_get(conn *c) {
     item *it;
 
-    protocol_binary_response_get* rsp = (protocol_binary_response_get*)c->wbuf;
+    protocol_binary_response_get_with_cksum* rsp = 
+        (protocol_binary_response_get_with_cksum*)c->wbuf;
     char* key = binary_get_key(c);
     size_t nkey = c->binary_header.request.keylen;
 
@@ -1697,7 +1719,9 @@ static void process_bin_get(conn *c) {
     }
 
     uint16_t keylen;
-    uint32_t bodylen;
+    uint32_t bodylen = 0;
+    uint32_t cksumlen = 0;
+    uint32_t extralen;
     item_info info = { .nvalue = 1 };
 
     switch (ret) {
@@ -1712,25 +1736,37 @@ static void process_bin_get(conn *c) {
         }
 
         keylen = 0;
-        bodylen = sizeof(rsp->message.body) + info.nbytes;
 
         STATS_HIT(c, get, key, nkey);
 
         if (c->cmd == PROTOCOL_BINARY_CMD_GETK) {
-            bodylen += nkey;
+            bodylen = nkey;
             keylen = nkey;
         }
-        add_bin_header(c, 0, sizeof(rsp->message.body), keylen, bodylen);
+        
+        if (c->binary_header.request.datatype & PROTOCOL_BINARY_WITH_CKSUM) {
+            bodylen += cksumlen = strlen(info.cksum);
+            extralen = sizeof(struct get_body_with_cksum); 
+            rsp->message.body.cksumlen = htonl(cksumlen);
+        } else {
+            extralen = sizeof(struct get_body); 
+        }
+        
+        bodylen += extralen + info.nbytes;
+            
+        add_bin_header(c, 0, extralen, keylen, bodylen);
         rsp->message.header.response.cas = htonll(info.cas);
 
-        // add the flags
+        // add the flags and checksum
         rsp->message.body.flags = info.flags;
-        add_iov(c, &rsp->message.body, sizeof(rsp->message.body));
+        add_iov(c, &rsp->message.body, extralen);
 
         if (c->cmd == PROTOCOL_BINARY_CMD_GETK) {
             add_iov(c, info.key, nkey);
         }
-
+        if (c->binary_header.request.datatype & PROTOCOL_BINARY_WITH_CKSUM) {
+            add_iov(c, info.cksum, cksumlen);
+        }
         add_iov(c, info.value[0].iov_base, info.value[0].iov_len);
         conn_set_state(c, conn_mwrite);
         /* Remember this item so we can garbage collect it later */
@@ -2269,6 +2305,65 @@ static bool authenticated(conn *c) {
     return rv;
 }
 
+static bool binary_response_handler_with_cksum(const void *key, uint16_t keylen,
+                                    const void *ext, uint8_t extlen,
+                                    const void *cksum, uint8_t cklen,
+                                    const void *body, uint32_t bodylen,
+                                    uint8_t datatype, uint16_t status,
+                                    uint64_t cas, const void *cookie)
+{
+    conn *c = (conn*)cookie;
+    /* Look at append_bin_stats */
+    size_t needed = keylen + extlen + cklen + bodylen + sizeof(protocol_binary_response_header);
+    if (!grow_dynamic_buffer(c, needed)) {
+        if (settings.verbose > 0) {
+            settings.extensions.logger->log(EXTENSION_LOG_INFO, c,
+                    "<%d ERROR: Failed to allocate memory for response\n",
+                    c->sfd);
+        }
+        return false;
+    }
+
+    char *buf = c->dynamic_buffer.buffer + c->dynamic_buffer.offset;
+    protocol_binary_response_header header = {
+        .response.magic = (uint8_t)PROTOCOL_BINARY_RES,
+        .response.opcode = c->binary_header.request.opcode,
+        .response.keylen = (uint16_t)htons(keylen),
+        .response.extlen = extlen,
+        .response.datatype = datatype,
+        .response.status = (uint16_t)htons(status),
+        .response.bodylen = htonl(bodylen + keylen + cklen + extlen),
+        .response.opaque = c->opaque,
+        .response.cas = htonll(cas),
+    };
+
+    memcpy(buf, header.bytes, sizeof(header.response));
+    buf += sizeof(header.response);
+
+    if (extlen > 0) {
+        memcpy(buf, ext, extlen);
+        buf += extlen;
+    }
+
+    if (keylen > 0) {
+        memcpy(buf, key, keylen);
+        buf += keylen;
+    }
+
+    if (cklen > 0) {
+        memcpy(buf, cksum, cklen);
+        buf += cklen;
+    }
+
+    if (bodylen > 0) {
+        memcpy(buf, body, bodylen);
+    }
+
+    c->dynamic_buffer.offset += needed;
+
+    return true;
+}
+
 static bool binary_response_handler(const void *key, uint16_t keylen,
                                     const void *ext, uint8_t extlen,
                                     const void *body, uint32_t bodylen,
@@ -2426,6 +2521,8 @@ static void ship_tap_log(conn *c) {
             }
             send_data = true;
             c->ilist[c->ileft++] = it;
+            uint32_t cksum_len = strnlen(info.cksum, 100) + 1;
+            assert(cksum_len > 4);
 
             if (event == TAP_CHECKPOINT_START) {
                 msg.mutation.message.header.request.opcode =
@@ -2454,6 +2551,12 @@ static void ship_tap_log(conn *c) {
             if ((tap_flags & TAP_FLAG_NO_VALUE) == 0) {
                 bodylen += info.nbytes;
             }
+
+            if ((event == TAP_MUTATION) && (tap_flags & TAP_FLAG_CKSUM)) {
+                msg.mutation.message.body.tap.cksum_len = cksum_len;
+                bodylen += cksum_len;
+            }
+ 
             msg.mutation.message.header.request.bodylen = htonl(bodylen);
             msg.mutation.message.body.item.flags = htonl(info.flags);
             msg.mutation.message.body.item.expiration = htonl(info.exptime);
@@ -2477,7 +2580,10 @@ static void ship_tap_log(conn *c) {
             if ((tap_flags & TAP_FLAG_NO_VALUE) == 0) {
                 add_iov(c, info.value[0].iov_base, info.value[0].iov_len);
             }
-
+            
+            if (event == TAP_MUTATION && tap_flags & TAP_FLAG_CKSUM) {
+                add_iov(c, info.cksum, cksum_len);
+            }
             break;
         case TAP_DELETION:
             /* This is a delete */
@@ -2599,7 +2705,8 @@ static void process_bin_unknown_packet(conn *c) {
 
     if (ret == ENGINE_SUCCESS) {
         ret = settings.engine.v1->unknown_command(settings.engine.v0, c, packet,
-                                                  binary_response_handler);
+                                                  binary_response_handler, 
+                                                  binary_response_handler_with_cksum);
     }
 
     if (ret == ENGINE_SUCCESS) {
@@ -2695,12 +2802,17 @@ static void process_bin_tap_packet(tap_event_t event, conn *c) {
     uint32_t flags = 0;
     uint32_t exptime = 0;
     uint32_t ndata = c->binary_header.request.bodylen - nengine - nkey - 8;
+    char *cksum = DI_CKSUM_DISABLED_STR;
 
     if (event == TAP_MUTATION || event == TAP_CHECKPOINT_START ||
         event == TAP_CHECKPOINT_END) {
         protocol_binary_request_tap_mutation *mutation = (void*)tap;
         flags = ntohl(mutation->message.body.item.flags);
         exptime = ntohl(mutation->message.body.item.expiration);
+        if (tap_flags & TAP_FLAG_CKSUM) {
+            ndata -= mutation->message.body.tap.cksum_len;
+            cksum = (char *)data + ndata;
+        }
         key += 8;
         data += 8;
         ndata -= 8;
@@ -2716,7 +2828,8 @@ static void process_bin_tap_packet(tap_event_t event, conn *c) {
                                              flags, exptime,
                                              ntohll(tap->message.header.request.cas),
                                              data, ndata,
-                                             c->binary_header.request.vbucket);
+                                             c->binary_header.request.vbucket,
+                                             cksum);
     }
 
     switch (ret) {
@@ -2751,7 +2864,7 @@ static void process_bin_tap_ack(conn *c) {
         ret = settings.engine.v1->tap_notify(settings.engine.v0, c, NULL, 0, 0, status,
                                              TAP_ACK, seqno, key,
                                              c->binary_header.request.keylen, 0, 0,
-                                             0, NULL, 0, 0);
+                                             0, NULL, 0, 0, 0);
     }
 
     if (ret == ENGINE_DISCONNECT) {
@@ -2865,6 +2978,8 @@ static void dispatch_bin_command(conn *c) {
     int extlen = c->binary_header.request.extlen;
     uint16_t keylen = c->binary_header.request.keylen;
     uint32_t bodylen = c->binary_header.request.bodylen;
+    uint32_t withcksum = c->binary_header.request.datatype & 
+        PROTOCOL_BINARY_WITH_CKSUM;
 
     if (settings.require_sasl && !authenticated(c)) {
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_AUTH_ERROR, 0);
@@ -2947,8 +3062,15 @@ static void dispatch_bin_command(conn *c) {
         case PROTOCOL_BINARY_CMD_SET: /* FALLTHROUGH */
         case PROTOCOL_BINARY_CMD_ADD: /* FALLTHROUGH */
         case PROTOCOL_BINARY_CMD_REPLACE:
-            if (extlen == 8 && keylen != 0 && bodylen >= (keylen + 8)) {
-                bin_read_key(c, bin_reading_set_header, 8);
+            if (keylen > 0) {
+                if (extlen == 8) {
+                    c->cksumlen = 0;
+                    bin_read_key(c, bin_reading_set_header, 8);
+                } else if (withcksum && extlen == 12) {
+                    bin_read_key(c, bin_reading_cksum, 12);
+                } else {
+                    protocol_error = 1;
+                }
             } else {
                 protocol_error = 1;
             }
@@ -2980,8 +3102,15 @@ static void dispatch_bin_command(conn *c) {
             break;
         case PROTOCOL_BINARY_CMD_APPEND:
         case PROTOCOL_BINARY_CMD_PREPEND:
-            if (keylen > 0 && extlen == 0) {
-                bin_read_key(c, bin_reading_set_header, 0);
+            if (keylen > 0) {
+                if (extlen == 0) {
+                    c->cksumlen = 0;
+                    bin_read_key(c, bin_reading_set_header, 0);
+                } else if (withcksum && extlen == 4) {
+                    bin_read_key(c, bin_reading_cksum, 4);
+                } else {
+                    protocol_error = 1;
+                }
             } else {
                 protocol_error = 1;
             }
@@ -3063,23 +3192,40 @@ static void dispatch_bin_command(conn *c) {
         handle_binary_protocol_error(c);
 }
 
+static void process_bin_cksum(conn *c) {
+    protocol_binary_request_set* req = binary_get_request(c);
+    c->cksumlen = ntohl(req->message.body.cksumlen);
+    bin_read_chunk(c, bin_reading_set_header, c->cksumlen);
+    c->ritem = c->rcurr;    
+}
+
+static void process_bin_append_prepend_cksum(conn *c) {
+    protocol_binary_request_append_with_cksum* req = binary_get_request(c);
+    c->rlbytes = c->cksumlen = ntohl(req->message.body.cksumlen);
+    bin_read_chunk(c, bin_reading_set_header, c->cksumlen);
+    c->ritem = c->rcurr;    
+}
+
 static void process_bin_update(conn *c) {
-    char *key;
+    char *key, *cksum;
     uint16_t nkey;
     uint32_t vlen;
     item *it;
-    protocol_binary_request_set* req = binary_get_request(c);
+    protocol_binary_request_set* req = binary_get_request_with_cksum(c);
 
     assert(c != NULL);
 
     key = binary_get_key(c);
     nkey = c->binary_header.request.keylen;
+    cksum = key + nkey;
 
     /* fix byteorder in the request */
     req->message.body.flags = req->message.body.flags;
     rel_time_t expiration = ntohl(req->message.body.expiration);
 
-    vlen = c->binary_header.request.bodylen - (nkey + c->binary_header.request.extlen);
+    vlen = c->binary_header.request.bodylen - (nkey + c->binary_header.request.extlen
+        + c->cksumlen);
+
 
     if (settings.verbose > 1) {
         char buffer[1024];
@@ -3119,7 +3265,7 @@ static void process_bin_update(conn *c) {
                                            &it, key, nkey,
                                            vlen,
                                            req->message.body.flags,
-                                           expiration);
+                                           expiration, cksum, c->cksumlen);
         if (ret == ENGINE_SUCCESS && !settings.engine.v1->get_item_info(settings.engine.v0,
                                                                         c, it, &info)) {
             settings.engine.v1->release(settings.engine.v0, c, it);
@@ -3187,7 +3333,7 @@ static void process_bin_update(conn *c) {
 }
 
 static void process_bin_append_prepend(conn *c) {
-    char *key;
+    char *key, *cksum;
     int nkey;
     int vlen;
     item *it;
@@ -3196,7 +3342,9 @@ static void process_bin_append_prepend(conn *c) {
 
     key = binary_get_key(c);
     nkey = c->binary_header.request.keylen;
-    vlen = c->binary_header.request.bodylen - nkey;
+    vlen = c->binary_header.request.bodylen - (nkey + c->cksumlen +
+        c->binary_header.request.extlen);
+    cksum = key + nkey;
 
     if (settings.verbose > 1) {
         settings.extensions.logger->log(EXTENSION_LOG_DEBUG, c,
@@ -3215,7 +3363,7 @@ static void process_bin_append_prepend(conn *c) {
     if (ret == ENGINE_SUCCESS) {
         ret = settings.engine.v1->allocate(settings.engine.v0, c,
                                            &it, key, nkey,
-                                           vlen, 0, 0);
+                                           vlen, 0, 0, cksum, c->cksumlen);
         if (ret == ENGINE_SUCCESS && !settings.engine.v1->get_item_info(settings.engine.v0,
                                                                         c, it, &info)) {
             settings.engine.v1->release(settings.engine.v0, c, it);
@@ -3357,6 +3505,14 @@ static void complete_nread_binary(conn *c) {
             process_bin_update(c);
         }
         break;
+    case bin_reading_cksum:
+        if (c->cmd == PROTOCOL_BINARY_CMD_APPEND ||
+                c->cmd == PROTOCOL_BINARY_CMD_PREPEND) {
+            process_bin_append_prepend_cksum(c);
+        } else {
+            process_bin_cksum(c);
+        }
+        break;
     case bin_read_set_value:
         complete_update_bin(c);
         break;
@@ -3410,6 +3566,7 @@ static void reset_cmd_handler(conn *c) {
     c->cmd = -1;
     c->substate = bin_no_state;
     c->returncas = false;
+    c->cksumlen = 0;
     if(c->item != NULL) {
         settings.engine.v1->release(settings.engine.v0, c, c->item);
         c->item = NULL;
@@ -4036,6 +4193,8 @@ static inline char* process_get_command(conn *c, token_t *tokens, size_t ntokens
 
             case ENGINE_SUCCESS:
                 break;
+
+            case ENGINE_CKSUM_FAILED:
             case ENGINE_KEY_ENOENT:
             case ENGINE_TMPFAIL:
             default:
@@ -4074,9 +4233,10 @@ static inline char* process_get_command(conn *c, token_t *tokens, size_t ntokens
                     settings.engine.v1->release(settings.engine.v0, c, it);
                     return NULL;
                 }
+
                 int suffix_len = snprintf(suffix, SUFFIX_SIZE,
-                                          " %u %u\r\n", htonl(info.flags),
-                                          info.nbytes);
+                                          " %u %u %s\r\n", htonl(info.flags),
+                                          info.nbytes, info.cksum);
 
                 /*
                  * Construct the response. Each hit adds three elements to the
@@ -4139,7 +4299,7 @@ static inline char* process_get_command(conn *c, token_t *tokens, size_t ntokens
                 if (ret == ENGINE_TMPFAIL) {
                     char *msg = "SERVER_ERROR temporary failure";
                     if (add_iov(c, msg, strlen(msg)) != 0 ||
-                        add_iov(c, "\r\n", 2) != 0)
+                            add_iov(c, "\r\n", 2) != 0)
                     {
                         break;
                     }
@@ -4197,7 +4357,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     time_t exptime;
     int vlen;
     uint64_t req_cas_id=0;
-    item *it;
+    item *it = NULL;
 
     assert(c != NULL);
 
@@ -4211,6 +4371,8 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
 
+#define cksum_str tokens[5].value
+    
     if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)
            && safe_strtol(tokens[3].value, &exptime_int)
            && safe_strtol(tokens[4].value, (int32_t *)&vlen))) {
@@ -4223,7 +4385,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
 
     // does cas value exist?
     if (handle_cas) {
-        if (!safe_strtoull(tokens[5].value, &req_cas_id)) {
+        if (!safe_strtoull(tokens[6].value, &req_cas_id)) {
             out_string(c, "CLIENT_ERROR bad command line format");
             return;
         }
@@ -4245,7 +4407,8 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     if (ret == ENGINE_SUCCESS) {
         ret = settings.engine.v1->allocate(settings.engine.v0, c,
                                            &it, key, nkey,
-                                           vlen, htonl(flags), exptime);
+                                           vlen, htonl(flags), exptime, cksum_str, 
+                                           tokens[5].length);
     }
 
     item_info info = { .nvalue = 1 };
@@ -4268,6 +4431,10 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         break;
     case ENGINE_DISCONNECT:
         c->state = conn_closing;
+        break;
+    case ENGINE_CKSUM_FAILED:
+        settings.engine.v1->release(settings.engine.v0, c, it);
+        out_string(c, "SERVER_ERROR checksum failed");
         break;
     default:
         if (ret == ENGINE_E2BIG) {
@@ -4492,7 +4659,7 @@ static char* process_command(conn *c, char *command) {
 
         ret = process_get_command(c, tokens, ntokens, false);
 
-    } else if ((ntokens == 6 || ntokens == 7) &&
+    } else if ((ntokens == 7 || ntokens == 8) &&
                ((strcmp(tokens[COMMAND_TOKEN].value, "add") == 0 && (comm = (int)OPERATION_ADD)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "set") == 0 && (comm = (int)OPERATION_SET)) ||
                 (strcmp(tokens[COMMAND_TOKEN].value, "replace") == 0 && (comm = (int)OPERATION_REPLACE)) ||
@@ -4501,7 +4668,7 @@ static char* process_command(conn *c, char *command) {
 
         process_update_command(c, tokens, ntokens, (ENGINE_STORE_OPERATION)comm, false);
 
-    } else if ((ntokens == 7 || ntokens == 8) && (strcmp(tokens[COMMAND_TOKEN].value, "cas") == 0 && (comm = (int)OPERATION_CAS))) {
+    } else if ((ntokens == 8 || ntokens == 9) && (strcmp(tokens[COMMAND_TOKEN].value, "cas") == 0 && (comm = (int)OPERATION_CAS))) {
 
         process_update_command(c, tokens, ntokens, (ENGINE_STORE_OPERATION)comm, true);
 
@@ -6457,7 +6624,7 @@ static ENGINE_ERROR_CODE internal_arithmetic(ENGINE_HANDLE* handle,
         *result = val;
         item *nit = NULL;
         if (e->allocate(handle, cookie, &nit, key,
-                        nkey, nb, info.flags, info.exptime) != ENGINE_SUCCESS) {
+                        nkey, nb, info.flags, info.exptime, 0, 0) != ENGINE_SUCCESS) {
             e->release(handle, cookie, it);
             return ENGINE_ENOMEM;
         }
@@ -6478,7 +6645,7 @@ static ENGINE_ERROR_CODE internal_arithmetic(ENGINE_HANDLE* handle,
         char value[80];
         size_t nb = snprintf(value, sizeof(value), "%"PRIu64"\r\n", initial);
         *result = initial;
-        if (e->allocate(handle, cookie, &it, key, nkey, nb, 0, exptime) != ENGINE_SUCCESS) {
+        if (e->allocate(handle, cookie, &it, key, nkey, nb, 0, exptime, 0, 0) != ENGINE_SUCCESS) {
             e->release(handle, cookie, it);
             return ENGINE_ENOMEM;
         }

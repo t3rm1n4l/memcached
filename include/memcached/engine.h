@@ -84,6 +84,32 @@ extern "C" {
                                  uint8_t datatype, uint16_t status,
                                  uint64_t cas, const void *cookie);
 
+    /**
+     * Callback for adding a response backet
+     * @param key The key to put in the response
+     * @param keylen The length of the key
+     * @param ext The data to put in the extended field in the response
+     * @param extlen The number of bytes in the ext field
+     * @param cksum The checksum data to put in the extended field in the response
+     * @param cksumlen The number of bytes in the cksum field
+     * @param body The data body
+     * @param bodylen The number of bytes in the body
+     * @param datatype This is currently not used and should be set to 0
+     * @param status The status code of the return packet (see in protocol_binary
+     *               for the legal values)
+     * @param cas The cas to put in the return packet
+     * @param cookie The cookie provided by the frontend
+     * @return true if return message was successfully created, false if an
+     *              error occured that prevented the message from being sent
+     */
+    typedef bool (*ADD_RESPONSE_WITH_CKSUM)(const void *key, uint16_t keylen,
+                                 const void *ext, uint8_t extlen,
+                                 const void *cksum, uint8_t cksumlen,
+                                 const void *body, uint32_t bodylen,
+                                 uint8_t datatype, uint16_t status,
+                                 uint64_t cas, const void *cookie);
+
+
 
     /**
      * Abstract interface to an engine.
@@ -259,6 +285,8 @@ extern "C" {
          *        value of this item.
          * @param flags the item's flags
          * @param exptime the maximum lifetime of this item
+         * @param cksum the checksum of this item
+         * @param clen the length of the checksum string
          *
          * @return ENGINE_SUCCESS if all goes well
          */
@@ -269,7 +297,9 @@ extern "C" {
                                       const size_t nkey,
                                       const size_t nbytes,
                                       const int flags,
-                                      const rel_time_t exptime);
+                                      const rel_time_t exptime,
+                                      const char *cksum,
+                                      const size_t clen);
 
         /**
          * Remove an item.
@@ -433,13 +463,15 @@ extern "C" {
          * @param cookie The cookie provided by the frontend
          * @param request pointer to request header to be filled in
          * @param response function to transmit data
+         * @param response_cksum function to transmit data with checksum
          *
          * @return ENGINE_SUCCESS if all goes well
          */
         ENGINE_ERROR_CODE (*unknown_command)(ENGINE_HANDLE* handle,
                                              const void* cookie,
                                              protocol_binary_request_header *request,
-                                             ADD_RESPONSE response);
+                                             ADD_RESPONSE response, 
+                                             ADD_RESPONSE_WITH_CKSUM response_cksum);
 
         /* TAP operations */
 
@@ -465,6 +497,7 @@ extern "C" {
          * @param data the data for the item
          * @param ndata the number of bytes in the object
          * @param vbucket the virtual bucket for the object
+         * @param cksum checksum of the object
          * @return ENGINE_SUCCESS for success
          */
         ENGINE_ERROR_CODE (*tap_notify)(ENGINE_HANDLE* handle,
@@ -482,7 +515,8 @@ extern "C" {
                                         uint64_t cas,
                                         const void *data,
                                         size_t ndata,
-                                        uint16_t vbucket);
+                                        uint16_t vbucket,
+                                        const char *cksum);
 
         /**
          * Get (or create) a Tap iterator for this connection.

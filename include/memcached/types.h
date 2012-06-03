@@ -42,6 +42,7 @@ extern "C" {
         ENGINE_EACCESS     = 0x0b, /**< Access control violations */
         ENGINE_NOT_MY_VBUCKET = 0x0c, /** < This vbucket doesn't belong to me */
         ENGINE_TMPFAIL     = 0x0d, /**< Temporary failure, please try again later */
+        ENGINE_CKSUM_FAILED = 0x0e, /**< Checksum failed */
         ENGINE_FAILED      = 0xff  /**< Generic failue. */
     } ENGINE_ERROR_CODE;
 
@@ -72,6 +73,7 @@ extern "C" {
         uint16_t nkey; /**< The total length of the key (in bytes) */
         uint16_t nvalue; /** < IN: The number of elements available in value
                           * OUT: the number of elements used in value */
+        const char *cksum; /** checksum of the value */
         const void *key;
         struct iovec value[1];
     } item_info;

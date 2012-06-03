@@ -3,7 +3,7 @@
 #
 man_MANS = doc/memcached.1
 bin_PROGRAMS = engine_testapp memcached mcstat
-noinst_PROGRAMS = sizes testapp timedrun testasciiapp
+#noinst_PROGRAMS = sizes testapp timedrun testasciiapp
 pkginclude_HEADERS = \
                      include/memcached/callback.h \
                      include/memcached/config_parser.h \
@@ -25,8 +25,8 @@ pkginclude_HEADERS = \
 # other modules depend on it
 pkglib_LTLIBRARIES = libmemcached_utilities.la \
                      ascii_scrub.la \
-                     basic_engine_testsuite.la \
-                     default_engine.la \
+                   # basic_engine_testsuite.la \
+                   # default_engine.la \
                      example_protocol.la \
                      blackhole_logger.la \
                      stdin_term_handler.la

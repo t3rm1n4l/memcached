@@ -30,8 +30,8 @@
 #define UDP_HEADER_SIZE 8
 #define MAX_SENDBUF_SIZE (256 * 1024 * 1024)
 /* I'm told the max length of a 64-bit num converted to string is 20 bytes.
- * Plus a few for spaces, \r\n, \0 */
-#define SUFFIX_SIZE 24
+ * Plus a few for spaces, \r\n, \0. Due to checksum length will be more */
+#define SUFFIX_SIZE 48
 
 /** Initial size of list of items being returned by "get". */
 #define ITEM_LIST_INITIAL 200
@@ -87,8 +87,11 @@
 #define APPEND_NUM_STAT(num, name, fmt, val) \
     APPEND_NUM_FMT_STAT("%d:%s", num, name, fmt, val)
 
+#define DI_CKSUM_DISABLED_STR "0001:" 
+
 enum bin_substates {
     bin_no_state,
+    bin_reading_cksum,
     bin_reading_set_header,
     bin_reading_cas_header,
     bin_read_set_value,
@@ -371,6 +374,7 @@ struct conn {
     short cmd; /* current command being processed */
     int opaque;
     int keylen;
+    int cksumlen;
 
     int list_state; /* bitmask of list state data for this connection */
     conn   *next;     /* Used for generating a list of conn structures */

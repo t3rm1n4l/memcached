@@ -65,7 +65,7 @@ static ENGINE_ERROR_CODE execute_command(const void *cmd_cookie, const void *coo
         return response_handler(cookie, 29, "SERVER_ERROR internal error\r\n");
     }
 
-    v1->unknown_command(server->engine, &status, &request, my_response_handler);
+    v1->unknown_command(server->engine, &status, &request, my_response_handler, NULL);
 
     if (status == PROTOCOL_BINARY_RESPONSE_SUCCESS) {
         return response_handler(cookie, 4, "OK\r\n");

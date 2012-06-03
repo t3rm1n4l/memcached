@@ -84,7 +84,8 @@ extern "C"
         PROTOCOL_BINARY_RESPONSE_NOT_SUPPORTED = 0x83,
         PROTOCOL_BINARY_RESPONSE_EINTERNAL = 0x84,
         PROTOCOL_BINARY_RESPONSE_EBUSY = 0x85,
-        PROTOCOL_BINARY_RESPONSE_ETMPFAIL = 0x86
+        PROTOCOL_BINARY_RESPONSE_ETMPFAIL = 0x86,
+        PROTOCOL_BINARY_RESPONSE_CKSUM_FAILED = 0x87
     } protocol_binary_response_status;
 
     /**
@@ -178,6 +179,8 @@ extern "C"
         PROTOCOL_BINARY_RAW_BYTES = 0x00
     } protocol_binary_datatypes;
 
+#define PROTOCOL_BINARY_WITH_CKSUM  0x01
+
     /**
      * Definition of the header structure for a request packet.
      * See section 2
@@ -250,12 +253,15 @@ extern "C"
      * getkq.
      * See section 4
      */
+    
+    struct get_body {
+        uint32_t flags;
+    };
+
     typedef union {
         struct {
             protocol_binary_response_header header;
-            struct {
-                uint32_t flags;
-            } body;
+            struct get_body body;
         } message;
         uint8_t bytes[sizeof(protocol_binary_response_header) + 4];
     } protocol_binary_response_get;
@@ -263,6 +269,24 @@ extern "C"
     typedef protocol_binary_response_get protocol_binary_response_getq;
     typedef protocol_binary_response_get protocol_binary_response_getk;
     typedef protocol_binary_response_get protocol_binary_response_getkq;
+
+    /**
+     * Definition of the packet returned from a successful get, getq, getk and
+     * getkq with checksum.
+     */
+
+    struct get_body_with_cksum {
+        uint32_t flags;
+        uint32_t cksumlen;
+    };
+
+    typedef union {
+        struct {
+            protocol_binary_response_header header;
+            struct get_body_with_cksum body;
+        } message;
+        uint8_t bytes[sizeof(protocol_binary_response_header) + 8];
+    } protocol_binary_response_get_with_cksum;
 
     /**
      * Definition of the packet used by the delete command
@@ -308,12 +332,26 @@ extern "C"
             struct {
                 uint32_t flags;
                 uint32_t expiration;
+                uint32_t cksumlen;
             } body;
         } message;
         uint8_t bytes[sizeof(protocol_binary_request_header) + 8];
     } protocol_binary_request_set;
     typedef protocol_binary_request_set protocol_binary_request_add;
     typedef protocol_binary_request_set protocol_binary_request_replace;
+
+    /**
+     * Definition of the packet used by append with checksum
+     */
+    typedef union {
+        struct {
+            protocol_binary_request_header header;
+            struct {
+                uint32_t cksumlen;
+            } body;
+        } message;
+        uint8_t bytes[sizeof(protocol_binary_request_header) + 4];
+    } protocol_binary_request_append_with_cksum;
 
     /**
      * Definition of the packet returned by set, add and replace
@@ -595,6 +633,10 @@ extern "C"
                  * the tap server will maintain its checkpoint cursor permanently.
                  */
 #define TAP_CONNECT_REGISTERED_CLIENT 0x80
+                /**
+                 *The tap consumer needs checksum in the tap stream
+                 */
+#define TAP_CONNECT_REQUEST_CKSUM 0x100
             } body;
         } message;
         uint8_t bytes[sizeof(protocol_binary_request_header) + 4];
@@ -619,11 +661,15 @@ extern "C"
                      * The value for the key is not included in the packet
                      */
 #define TAP_FLAG_NO_VALUE 0x02
+                    /**
+                     * The checksum is included in the packet
+                     */
+#define TAP_FLAG_CKSUM 0x04
                     uint16_t flags;
                     uint8_t  ttl;
-                    uint8_t  res1;
-                    uint8_t  res2;
-                    uint8_t  res3;
+                    uint8_t cksum_len;
+                    uint8_t res1;
+                    uint8_t res2;
                 } tap;
                 struct {
                     uint32_t flags;
@@ -647,9 +693,8 @@ extern "C"
                      */
                     uint16_t flags;
                     uint8_t  ttl;
+                    uint16_t cksum_len;
                     uint8_t  res1;
-                    uint8_t  res2;
-                    uint8_t  res3;
                 } tap;
             } body;
         } message;
