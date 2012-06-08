@@ -4997,7 +4997,7 @@ static enum transmit_result transmit(conn *c) {
         struct msghdr *m = &c->msglist[c->msgcurr];
 
         res = sendmsg(c->sfd, m, 0);
-        if (res > 0) {
+        if (res >= 0) {
             STATS_ADD(c, bytes_written, res);
 
             /* We've written some of the data. Remove the completed
@@ -5027,7 +5027,7 @@ static enum transmit_result transmit(conn *c) {
             }
             return TRANSMIT_SOFT_ERROR;
         }
-        /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK,
+        /* If res == -1 and error is not EAGAIN or EWOULDBLOCK,
            we have a real error, on which we close the connection */
         if (settings.verbose > 0) {
             settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
