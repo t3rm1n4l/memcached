@@ -464,6 +464,7 @@ extern "C"
             protocol_binary_request_header header;
             struct {
                 uint32_t expiration;
+                uint16_t metadata_len;
             } body;
         } message;
         uint8_t bytes[sizeof(protocol_binary_request_header) + 4];
