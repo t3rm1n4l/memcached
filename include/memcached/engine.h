@@ -571,7 +571,27 @@ extern "C" {
         size_t (*errinfo)(ENGINE_HANDLE *handle, const void* cookie,
                           char *buffer, size_t buffsz);
 
+        /**
+         * Updates the stats that ep-engine maintains for memcached
+         *
+         * @param handle the engine handle
+         * @param key array of keys containing human readable name of the stat
+         * @param value array of new values for the stat, will be added to the histogram
+         * @param number of values in the above arrays
+         * @return nothing
+         */
+        void (*update_stats)(ENGINE_HANDLE *handle, char *key[], uint64_t *value, int n);
 
+        /**
+         * Updates the stats for ep-engine extensions
+         *
+         * @param handle the engine handle
+         * @param key array of keys uniquely identifying the extension
+         * @param value array of new values for the stat, will be added to the histogram
+         * @param number of values in the above arrays
+         * @return nothing
+         */
+        void (*update_extension_stats)(ENGINE_HANDLE *handle, char *key[], uint64_t *value, int n);
 
     } ENGINE_HANDLE_V1;
 

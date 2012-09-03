@@ -17,6 +17,7 @@
 #include "topkeys.h"
 
 #include "sasl_defs.h"
+#include "stats.h"
 
 /** Maximum length of a key. */
 #define KEY_MAX_LENGTH 250
@@ -88,6 +89,11 @@
     APPEND_NUM_FMT_STAT("%d:%s", num, name, fmt, val)
 
 #define DI_CKSUM_DISABLED_STR "0001:" 
+
+#define GET_STR     "get"
+#define SET_STR     "set"
+#define GETSET_STR  "getset"
+#define DELETE_STR  "delete"
 
 enum bin_substates {
     bin_no_state,
@@ -384,6 +390,7 @@ struct conn {
     bool ewouldblock;
     bool tap_nack_mode;
     TAP_ITERATOR tap_iterator;
+    memcache_stats_t stats;
 };
 
 /* States for the connection list_state */
@@ -401,7 +408,6 @@ conn *conn_new(const SOCKET sfd, STATE_FUNC init_state, const int event_flags,
 extern int daemonize(int nochdir, int noclose);
 #endif
 
-#include "stats.h"
 #include "trace.h"
 #include "hash.h"
 #include <memcached/util.h>
