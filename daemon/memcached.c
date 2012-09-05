@@ -4636,12 +4636,6 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         /* swallow the data line */
         c->write_and_go = conn_swallow;
         c->sbytes = vlen + 2;
-
-        /* Avoid stale data persisting in cache because we failed alloc.
-         * Unacceptable for SET. Anywhere else too? */
-        if (store_op == OPERATION_SET) {
-            settings.engine.v1->remove(settings.engine.v0, c, key, nkey, 0, 0);
-        }
     }
 }
 
