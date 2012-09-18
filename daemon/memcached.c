@@ -854,18 +854,6 @@ static void conn_update_stats(conn *c) {
         }
     }
 
-	c->stats.nw_read_time/=1000;
-    if (c->stats.nw_read_time && c->stats.nw_read_bytes > MIN_NW_BYTES) {
-        ptr_cmd_str[pos] = "nw_read_bpus";
-        ptr_value[pos++] = c->stats.nw_read_bytes/c->stats.nw_read_time;
-    }
-
-	c->stats.nw_write_time/=1000;
-    if (c->stats.nw_write_time && c->stats.nw_write_bytes > MIN_NW_BYTES) {
-        ptr_cmd_str[pos] = "nw_write_bpus";
-        ptr_value[pos++] = c->stats.nw_write_bytes/c->stats.nw_write_time;
-    }
-
     if (pos > 0) {
         settings.engine.v1->update_stats(settings.engine.v0, 
                 ptr_cmd_str, ptr_value, pos);
@@ -882,35 +870,6 @@ static void conn_update_stats(conn *c) {
     }
     memset(&(c->stats), 0, sizeof(memcache_stats_t)); 
 }
-
-
-static void start_nw_stats_monitor(conn *c) {
-    if (c->stats.nw_start_time == 0) {
-        c->stats.nw_start_time = time_now_nsec();
-        c->stats.nw_bytes = 0;
-    }
-}
-
-static void stop_nw_stats_monitor(conn *c, short type) {
-    if (c->stats.monitor_nw_time && c->stats.nw_bytes > 0) {
-        uint64_t diff = time_now_nsec() - c->stats.nw_start_time;
-        if (diff < 0)
-            diff = 0;
-        if (type == NW_READ_STAT) {
-            c->stats.nw_read_time += diff;
-            c->stats.nw_read_bytes += c->stats.nw_bytes;
-        }
-        else if (type == NW_WRITE_STAT) {
-            c->stats.nw_write_time += diff;
-            c->stats.nw_write_bytes += c->stats.nw_bytes;
-        }
-    }
-
-    c->stats.monitor_nw_time = false;
-    c->stats.nw_start_time = 0;
-    c->stats.nw_bytes = 0;
-}
-
 
 /*
  * Sets a connection's current state in the state machine. Any special
@@ -1890,8 +1849,6 @@ static void process_bin_get(conn *c) {
             add_iov(c, info.cksum, cksumlen);
         }
         add_iov(c, info.value[0].iov_base, info.value[0].iov_len);
-		// To monitor the time required to write data to network
-        c->stats.monitor_nw_time = true;
         conn_set_state(c, conn_mwrite);
         /* Remember this item so we can garbage collect it later */
         c->item = it;
@@ -2839,7 +2796,6 @@ static void process_bin_unknown_packet(conn *c) {
             snprintf(opcode_str, sizeof(opcode_str) - 1, "%d", 
                 c->binary_header.request.opcode); 
             conn_set_extension_str(c, opcode_str);
-            c->stats.monitor_nw_time = true;
             write_and_free(c, c->dynamic_buffer.buffer, c->dynamic_buffer.offset);
             c->dynamic_buffer.buffer = NULL;
         } else {
@@ -3436,8 +3392,6 @@ static void process_bin_update(conn *c) {
         c->item = it;
         c->ritem = info.value[0].iov_base;
         c->rlbytes = vlen;
-		// To monitor the time required to read data from network
-        c->stats.monitor_nw_time = true;
         conn_set_state(c, conn_nread);
         c->substate = bin_read_set_value;
         break;
@@ -3529,8 +3483,6 @@ static void process_bin_append_prepend(conn *c) {
         c->item = it;
         c->ritem = info.value[0].iov_base;
         c->rlbytes = vlen;
-		// To monitor the time required to read data from network
-        c->stats.monitor_nw_time = true;
         conn_set_state(c, conn_nread);
         c->substate = bin_read_set_value;
         break;
@@ -3655,8 +3607,6 @@ static void complete_nread_binary(conn *c) {
         }
         break;
     case bin_read_set_value:
-        // We finished reading the value to be set
-        stop_nw_stats_monitor(c, NW_READ_STAT);
         complete_update_bin(c);
         break;
     case bin_reading_get_key:
@@ -3746,8 +3696,6 @@ static ENGINE_ERROR_CODE ascii_response_handler(const void *cookie,
 }
 
 static void complete_nread_ascii(conn *c) {
-    // We finished reading the value to be set
-    stop_nw_stats_monitor(c, NW_READ_STAT);
     if (c->ascii_cmd != NULL) {
         c->ewouldblock = false;
         switch (c->ascii_cmd->execute(c->ascii_cmd->cookie, c, 0, NULL,
@@ -4496,8 +4444,6 @@ static inline char* process_get_command(conn *c, token_t *tokens, size_t ntokens
         out_string(c, "SERVER_ERROR out of memory writing get response");
     }
     else {
-		// To monitor the time required to read data from network
-        c->stats.monitor_nw_time = true;
         conn_set_state(c, conn_mwrite);
         c->msgcurr = 0;
     }
@@ -4580,8 +4526,6 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
         c->ritem = info.value[0].iov_base;
         c->rlbytes = vlen;
         c->store_op = store_op;
-		// To monitor the time required to write data to network
-        c->stats.monitor_nw_time = true;
         conn_set_state(c, conn_nread);
         break;
     case ENGINE_EWOULDBLOCK:
@@ -4933,8 +4877,6 @@ static char* process_command(conn *c, char *command) {
                                  ascii_response_handler)) {
             case ENGINE_SUCCESS:
                 if (c->dynamic_buffer.buffer != NULL) {
-					// To monitor the time required to write data to network		
-                    c->stats.monitor_nw_time = true;
                     write_and_free(c, c->dynamic_buffer.buffer,
                                    c->dynamic_buffer.offset);
                     c->dynamic_buffer.buffer = NULL;
@@ -4992,8 +4934,6 @@ static int try_read_command(conn *c) {
             /* need more data! */
             return 0;
         } else {
-            // We are done with reading in the binary header
-            stop_nw_stats_monitor(c, NW_READ_STAT);
 #ifdef NEED_ALIGN
             if (((long)(c->rcurr)) % 8 != 0) {
                 /* must realign input buffer */
@@ -5096,8 +5036,6 @@ static int try_read_command(conn *c) {
 
             return 0;
         }
-        // We are done with reading in the ascii header (and probably more)
-        stop_nw_stats_monitor(c, NW_READ_STAT);
         cont = el + 1;
         if ((el - c->rcurr) > 1 && *(el - 1) == '\r') {
             el--;
@@ -5236,7 +5174,6 @@ static enum try_read_result try_read_network(conn *c) {
         res = recv(c->sfd, c->rbuf + c->rbytes, avail, 0);
         if (res > 0) {
             STATS_ADD(c, bytes_read, res);
-            c->stats.nw_bytes += res;
             gotdata = READ_DATA_RECEIVED;
             c->rbytes += res;
             if (res == avail) {
@@ -5334,7 +5271,6 @@ static enum transmit_result transmit(conn *c) {
         res = sendmsg(c->sfd, m, 0);
         if (res >= 0) {
             STATS_ADD(c, bytes_written, res);
-            c->stats.nw_bytes+= res;
 
             /* We've written some of the data. Remove the completed
                iovec entries from the list of pending writes. */
@@ -5508,17 +5444,12 @@ bool conn_waiting(conn *c) {
         conn_set_state(c, conn_closing);
         return true;
     }
- 	// To monitor the time required to read command header from network
-    c->stats.monitor_nw_time = true;
     conn_set_state(c, conn_read);
     return false;
 }
 
 bool conn_read(conn *c) {
     conn_set_start_time(c);
-    if (c->stats.monitor_nw_time) {
-        start_nw_stats_monitor(c);
-    }
     int res = IS_UDP(c->transport) ? try_read_udp(c) : try_read_network(c);
     switch (res) {
     case READ_NO_DATA_RECEIVED:
@@ -5667,14 +5598,10 @@ bool conn_nread(conn *c) {
         }
     }
 
-    if (c->stats.monitor_nw_time) {
-        start_nw_stats_monitor(c);
-    }
     /*  now try reading from the socket */
     res = recv(c->sfd, c->ritem, c->rlbytes, 0);
     if (res > 0) {
         STATS_ADD(c, bytes_read, res);
-        c->stats.nw_bytes += res;
         if (c->rcurr == c->ritem) {
             c->rcurr += res;
         }
@@ -5743,13 +5670,8 @@ bool conn_mwrite(conn *c) {
         return true;
     }
 
-    if (c->stats.monitor_nw_time) {
-        start_nw_stats_monitor(c);
-    }
     switch (transmit(c)) {
     case TRANSMIT_COMPLETE:
-        // We are done with writing the value to the network (both ascii and binary)
-        stop_nw_stats_monitor(c, NW_WRITE_STAT);
         if (c->state == conn_mwrite) {
             while (c->ileft > 0) {
                 item *it = *(c->icurr);
