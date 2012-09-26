@@ -5583,8 +5583,6 @@ bool conn_nread(conn *c) {
     }
     /* first check if we have leftovers in the conn_read buffer */
     if (c->rbytes > 0) {
-        settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
-                "Already have data! \n");
         uint32_t tocopy = c->rbytes > c->rlbytes ? c->rlbytes : c->rbytes;
         if (c->ritem != c->rcurr) {
             memmove(c->ritem, c->rcurr, tocopy);
