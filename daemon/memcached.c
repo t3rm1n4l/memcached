@@ -972,6 +972,10 @@ static int add_iov(conn *c, const void *buf, int len) {
 
     assert(c != NULL);
 
+    if (len <= 0) {
+        return 0;
+    }
+
     do {
         m = &c->msglist[c->msgused - 1];
 
@@ -1537,9 +1541,7 @@ static void write_bin_packet(conn *c, protocol_binary_response_status err, int s
     }
 
     add_bin_header(c, err, 0, 0, len);
-    if (len > 0) {
-        add_iov(c, buffer, len);
-    }
+    add_iov(c, buffer, len);
     conn_set_state(c, conn_mwrite);
     if (swallow > 0) {
         c->sbytes = swallow;
@@ -1554,9 +1556,7 @@ static void write_bin_response(conn *c, void *d, int hlen, int keylen, int dlen)
     if (!c->noreply || c->cmd == PROTOCOL_BINARY_CMD_GET ||
         c->cmd == PROTOCOL_BINARY_CMD_GETK) {
         add_bin_header(c, 0, hlen, keylen, dlen);
-        if(dlen > 0) {
-            add_iov(c, d, dlen);
-        }
+        add_iov(c, d, dlen);
         conn_set_state(c, conn_mwrite);
         c->write_and_go = conn_new_cmd;
     } else {
@@ -2342,9 +2342,7 @@ static void process_bin_complete_sasl_auth(conn *c) {
         break;
     case SASL_CONTINUE:
         add_bin_header(c, PROTOCOL_BINARY_RESPONSE_AUTH_CONTINUE, 0, 0, outlen);
-        if(outlen > 0) {
-            add_iov(c, out, outlen);
-        }
+        add_iov(c, out, outlen);
         conn_set_state(c, conn_mwrite);
         c->write_and_go = conn_new_cmd;
         break;
@@ -5259,7 +5257,7 @@ bool update_event(conn *c, const int new_flags) {
 static enum transmit_result transmit(conn *c) {
     assert(c != NULL);
 
-    if (c->msgcurr < c->msgused &&
+    while (c->msgcurr < c->msgused &&
             c->msglist[c->msgcurr].msg_iovlen == 0) {
         /* Finished writing the current msg; advance to the next. */
         c->msgcurr++;
@@ -5269,7 +5267,7 @@ static enum transmit_result transmit(conn *c) {
         struct msghdr *m = &c->msglist[c->msgcurr];
 
         res = sendmsg(c->sfd, m, 0);
-        if (res >= 0) {
+        if (res > 0) {
             STATS_ADD(c, bytes_written, res);
 
             /* We've written some of the data. Remove the completed
@@ -5299,18 +5297,33 @@ static enum transmit_result transmit(conn *c) {
             }
             return TRANSMIT_SOFT_ERROR;
         }
-        /* If res == -1 and error is not EAGAIN or EWOULDBLOCK,
+        /* if res == 0 or res == -1 and error is not EAGAIN or EWOULDBLOCK
            we have a real error, on which we close the connection */
         if (settings.verbose > 0) {
-            settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
-                                            "Failed to write, and not due to blocking: %s",
-                                            strerror(errno));
+            if (res == -1) {
+                settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                        "Failed to write, and not due to blocking: %s",
+                        strerror(errno));
+            } else {
+                settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                        "%d - sendmsg returned 0\n",
+                        c->sfd);
+                for (int ii = 0; ii < m->msg_iovlen; ++ii) {
+                    settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                            "\t%d - %zu\n",
+                            c->sfd, m->msg_iov[ii].iov_len);
+                }
+
+            }
         }
 
-        if (IS_UDP(c->transport))
+
+
+        if (IS_UDP(c->transport)) {
             conn_set_state(c, conn_read);
-        else
+        } else {
             conn_set_state(c, conn_closing);
+        }
         return TRANSMIT_HARD_ERROR;
     } else {
         return TRANSMIT_COMPLETE;
