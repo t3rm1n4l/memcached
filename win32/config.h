@@ -30,6 +30,9 @@
 
 #define HAVE_STDBOOL_H
 
+#define HAVE_GETTIMEOFDAY 0
+#define HAVE_QUERYPERFORMANCECOUNTER 1
+
 #include "config_static.h"
 
 /* Define to empty if `const' does not conform to ANSI C. */

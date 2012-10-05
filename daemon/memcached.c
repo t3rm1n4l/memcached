@@ -31,6 +31,11 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <stddef.h>
+#include <sys/time.h>
+
+#ifdef HAVE_MACH_MACH_TIME_H
+#include <mach/mach_time.h>
+#endif
 
 static inline void item_set_cas(const void *cookie, item *it, uint64_t cas) {
     settings.engine.v1->item_set_cas(settings.engine.v0, cookie, it, cas);
@@ -826,12 +831,98 @@ const char *state_text(STATE_FUNC state) {
     }
 }
 
+#if defined(HAVE_MACH_ABSOLUTE_TIME) && !defined(HAVE_CLOCK_GETTIME)
+
+#define CLOCK_MONOTONIC 192996728
+
+static void mach_absolute_difference(uint64_t start, uint64_t end,
+                              struct timespec *tp) {
+    uint64_t difference = end - start;
+    static mach_timebase_info_data_t info = {0,0};
+
+    if (info.denom == 0) {
+        mach_timebase_info(&info);
+    }
+
+    uint64_t elapsednano = difference * (info.numer / info.denom);
+
+    tp->tv_sec = elapsednano * 1e-9;
+    tp->tv_nsec = elapsednano - (tp->tv_sec * 1e9);
+}
+
+static int clock_gettime(int which, struct timespec *tp) {
+    assert(which == CLOCK_MONOTONIC);
+
+    static uint64_t epoch = 0;
+
+    if (epoch == 0) {
+        epoch = mach_absolute_time();
+    }
+
+    uint64_t now = mach_absolute_time();
+
+    mach_absolute_difference(epoch, now, tp);
+
+    return 0;
+}
+
+#define HAVE_CLOCK_GETTIME 1
+#endif
+
 static uint64_t time_now_nsec() {
+#ifdef HAVE_CLOCK_GETTIME
     struct timespec tm;
     if (clock_gettime(CLOCK_MONOTONIC, &tm) == -1) { 
         abort();
     }
     return (((uint64_t)tm.tv_sec) * 1000000000) + tm.tv_nsec;
+#elif HAVE_GETTIMEOFDAY
+
+    hrtime_t ret;
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) == -1) {
+      return (-1ULL);
+    }
+
+    ret = (hrtime_t)tv.tv_sec * 1000000000;
+    ret += tv.tv_usec * 1000;
+    return ret;
+#elif defined(HAVE_QUERYPERFORMANCECOUNTER)
+    double ret;
+    // To fix the potential race condition for the local static variable,
+    // gethrtime should be called in a global static variable first.
+    // It will guarantee the local static variable will be initialized
+    // before any thread calls the function.
+    static LARGE_INTEGER pf = {.QuadPart = 0, .u.LowPart = 0, .u.HighPart=0};
+    static double freq;
+    LARGE_INTEGER currtime;
+
+    if ( pf.QuadPart == 0 ) {
+        if ( !QueryPerformanceFrequency(&pf) ) {
+            // Fall back to use gettimeofday() just in case
+            hrtime_t hret;
+            struct timeval tv;
+            if (gettimeofday(&tv, NULL) == -1) {
+                return (-1ULL);
+            }
+
+            hret = (hrtime_t)tv.tv_sec * 1000000000;
+            hret += tv.tv_usec * 1000;
+            return hret;
+        }
+        else {
+            assert(pf.QuadPart != 0);
+            freq = 1.0e9 / (double)pf.QuadPart;
+        }
+    }
+
+    QueryPerformanceCounter(&currtime);
+
+    ret = (double)currtime.QuadPart * freq ;
+    return (hrtime_t)ret;
+#else
+#error "I don't know how to build a highres clock..."
+#endif
 }
 
 static void conn_update_stats(conn *c) {

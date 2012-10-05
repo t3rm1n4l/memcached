@@ -400,10 +400,16 @@ if test "x$ac_cv_search_pthread_create" = "xno"; then
   AC_MSG_ERROR([Can't enable threads without the POSIX thread library.])
 fi
 
+AC_CHECK_HEADERS([mach/mach_time.h])
+
 AC_CHECK_FUNCS(mlockall)
 AC_CHECK_FUNCS(getpagesizes)
 AC_CHECK_FUNCS(memcntl)
 AC_CHECK_FUNCS(sigignore)
+AC_SEARCH_LIBS(clock_gettime, rt)
+AC_CHECK_FUNCS(clock_gettime)
+AC_CHECK_FUNCS(mach_absolute_time)
+AC_CHECK_FUNCS(gettimeofday)
 
 AC_DEFUN([AC_C_ALIGNMENT],
 [AC_CACHE_CHECK(for alignment, ac_cv_c_alignment,
