@@ -410,6 +410,7 @@ static ENGINE_ERROR_CODE mock_tap_notify(ENGINE_HANDLE* handle,
                                         const void *key,
                                         size_t nkey,
                                         uint32_t flags,
+                                        uint32_t queued,
                                         uint32_t exptime,
                                         uint64_t cas,
                                         const void *data,
@@ -430,7 +431,7 @@ static ENGINE_ERROR_CODE mock_tap_notify(ENGINE_HANDLE* handle,
            (ret = me->the_engine->tap_notify((ENGINE_HANDLE*)me->the_engine, c,
                                              engine_specific, nengine, ttl, tap_flags,
                                              tap_event, tap_seqno, key, nkey, flags,
-                                             exptime, cas, data, ndata, vbucket, 0)) == ENGINE_EWOULDBLOCK &&
+                                             queued, exptime, cas, data, ndata, vbucket, 0)) == ENGINE_EWOULDBLOCK &&
            c->handle_ewouldblock)
     {
         ++c->nblocks;

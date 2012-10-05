@@ -511,6 +511,7 @@ extern "C" {
                                         const void *key,
                                         size_t nkey,
                                         uint32_t flags,
+                                        uint32_t queued,
                                         uint32_t exptime,
                                         uint64_t cas,
                                         const void *data,

@@ -673,6 +673,7 @@ extern "C"
                 } tap;
                 struct {
                     uint32_t flags;
+                    uint32_t queued;
                     uint32_t expiration;
                 } item;
             } body;
