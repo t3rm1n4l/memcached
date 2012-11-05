@@ -521,6 +521,7 @@ static void usage(void) {
     printf("-q                           Only print errors.");
     printf("-.                           Print a . for each executed test.");
     printf("\n");
+    printf("-p                           Run test as parent process (do not fork)\n");
     printf("-h                           Prints this usage text.\n");
     printf("\n");
 }
@@ -645,6 +646,26 @@ static void reload_engine(ENGINE_HANDLE **h, ENGINE_HANDLE_V1 **h1,
     *h = handle;
 }
 
+static enum test_result run_test_internal(engine_test_t test, const char *engine, const char *default_cfg) {
+    enum test_result ret = PENDING;
+    /* Start the engines and go */
+    start_your_engines(engine, test.cfg ? test.cfg : default_cfg, true);
+    if (test.test_setup != NULL) {
+        if (!test.test_setup(handle, handle_v1)) {
+            fprintf(stderr, "Failed to run setup for test %s\n", test.name);
+            return FAIL;
+        }
+    }
+    ret = test.tfun(handle, handle_v1);
+    if (test.test_teardown != NULL) {
+        if (!test.test_teardown(handle, handle_v1)) {
+            fprintf(stderr, "WARNING: Failed to run teardown for test %s\n", test.name);
+        }
+    }
+    destroy_engine(false);
+    return ret;
+}
+
 static enum test_result run_test(engine_test_t test, const char *engine, const char *default_cfg) {
     enum test_result ret = PENDING;
     if (test.tfun != NULL) {
@@ -652,21 +673,7 @@ static enum test_result run_test(engine_test_t test, const char *engine, const c
         pid_t pid = fork();
         if (pid == 0) {
 #endif
-            /* Start the engines and go */
-            start_your_engines(engine, test.cfg ? test.cfg : default_cfg, true);
-            if (test.test_setup != NULL) {
-                if (!test.test_setup(handle, handle_v1)) {
-                    fprintf(stderr, "Failed to run setup for test %s\n", test.name);
-                    return FAIL;
-                }
-            }
-            ret = test.tfun(handle, handle_v1);
-            if (test.test_teardown != NULL) {
-                if (!test.test_teardown(handle, handle_v1)) {
-                    fprintf(stderr, "WARNING: Failed to run teardown for test %s\n", test.name);
-                }
-            }
-            destroy_engine(false);
+            ret = run_test_internal(test, engine, default_cfg);
 #if !defined(USE_GCOV) && !defined(WIN32)
             exit((int)ret);
         } else if (pid == (pid_t)-1) {
@@ -724,6 +731,7 @@ int main(int argc, char **argv) {
     int c, exitcode = 0, num_cases = 0, timeout = 0;
     bool quiet = false;
     bool dot = false;
+    bool run_as_parent = false;
     const char *engine = NULL;
     const char *engine_args = NULL;
     const char *test_suite = NULL;
@@ -766,6 +774,7 @@ int main(int argc, char **argv) {
           "q"  /* Be more quiet (only report failures) */
           "."  /* dot mode. */
           "n:"  /* test case to run */
+          "p" /* Run as parent process (do not fork)*/
         ))) {
         switch (c) {
         case 'E':
@@ -791,6 +800,9 @@ int main(int argc, char **argv) {
             break;
         case '.':
             dot = true;
+            break;
+        case 'p':
+            run_as_parent = true;
             break;
         default:
             fprintf(stderr, "Illegal argument \"%c\"\n", c);
@@ -875,9 +887,16 @@ int main(int argc, char **argv) {
             }
         }
         set_test_timeout(timeout);
-        exitcode += report_test(testcases[i].name,
-                                run_test(testcases[i], engine, engine_args),
-                                quiet);
+        if (test_case && run_as_parent) {
+            printf ("without forking...\n");
+            exitcode = report_test(testcases[i].name,
+                                    run_test_internal(testcases[i], engine, engine_args),
+                                    quiet);
+        } else {
+            exitcode += report_test(testcases[i].name,
+                                    run_test(testcases[i], engine, engine_args),
+                                    quiet);
+        }
         clear_test_timeout();
     }
 
