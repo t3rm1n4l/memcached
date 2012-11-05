@@ -675,10 +675,11 @@ extern "C"
                     uint32_t flags;
                     uint32_t queued;
                     uint32_t expiration;
+                    uint32_t res1;
                 } item;
             } body;
         } message;
-        uint8_t bytes[sizeof(protocol_binary_request_header) + 16];
+        uint8_t bytes[sizeof(protocol_binary_request_header) + 24];
     } protocol_binary_request_tap_mutation;
 
     typedef union {

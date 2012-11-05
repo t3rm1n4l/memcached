@@ -2715,9 +2715,9 @@ static void ship_tap_log(conn *c) {
 
             msg.mutation.message.header.request.cas = htonll(info.cas);
             msg.mutation.message.header.request.keylen = htons(info.nkey);
-            msg.mutation.message.header.request.extlen = 16;
+            msg.mutation.message.header.request.extlen = 24;
 
-            bodylen = 16 + info.nkey + nengine;
+            bodylen = 24 + info.nkey + nengine;
             if ((tap_flags & TAP_FLAG_NO_VALUE) == 0) {
                 bodylen += info.nbytes;
             }
@@ -2990,9 +2990,9 @@ static void process_bin_tap_packet(tap_event_t event, conn *c) {
             ndata -= mutation->message.body.tap.cksum_len;
             cksum = (char *)data + ndata;
         }
-        key += 8;
-        data += 8;
-        ndata -= 8;
+        key += 16;
+        data += 16;
+        ndata -= 16;
     }
 
     ENGINE_ERROR_CODE ret = c->aiostat;
