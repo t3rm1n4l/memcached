@@ -2975,7 +2975,7 @@ static void process_bin_tap_packet(tap_event_t event, conn *c) {
     uint16_t nkey = c->binary_header.request.keylen;
     char *data = key + nkey;
     uint32_t flags = 0;
-    uint32_t queued = 0;
+    uint32_t queued = UINT32_MAX;
     uint32_t exptime = 0;
     uint32_t ndata = c->binary_header.request.bodylen - nengine - nkey - 8;
     char *cksum = DI_CKSUM_DISABLED_STR;
@@ -2984,15 +2984,19 @@ static void process_bin_tap_packet(tap_event_t event, conn *c) {
         event == TAP_CHECKPOINT_END) {
         protocol_binary_request_tap_mutation *mutation = (void*)tap;
         flags = ntohl(mutation->message.body.item.flags);
-        queued = ntohl(mutation->message.body.item.queued);
+        int offset = 8;
+        if (c->binary_header.request.extlen == 24) {
+            queued = ntohl(mutation->message.body.item.queued);
+            offset = 16;
+        }
         exptime = ntohl(mutation->message.body.item.expiration);
         if (tap_flags & TAP_FLAG_CKSUM) {
             ndata -= mutation->message.body.tap.cksum_len;
             cksum = (char *)data + ndata;
         }
-        key += 16;
-        data += 16;
-        ndata -= 16;
+        key += offset;
+        data += offset;
+        ndata -= offset;
     }
 
     ENGINE_ERROR_CODE ret = c->aiostat;
