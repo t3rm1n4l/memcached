@@ -2681,7 +2681,6 @@ static void ship_tap_log(conn *c) {
             more_data = false;
             break;
         case TAP_CHECKPOINT_START:
-        case TAP_CHECKPOINT_END:
         case TAP_MUTATION:
             if (!settings.engine.v1->get_item_info(settings.engine.v0, c, it, &info)) {
                 settings.engine.v1->release(settings.engine.v0, c, it);
@@ -2699,12 +2698,6 @@ static void ship_tap_log(conn *c) {
                     PROTOCOL_BINARY_CMD_TAP_CHECKPOINT_START;
                 pthread_mutex_lock(&tap_stats.mutex);
                 tap_stats.sent.checkpoint_start++;
-                pthread_mutex_unlock(&tap_stats.mutex);
-            } else if (event == TAP_CHECKPOINT_END) {
-                msg.mutation.message.header.request.opcode =
-                    PROTOCOL_BINARY_CMD_TAP_CHECKPOINT_END;
-                pthread_mutex_lock(&tap_stats.mutex);
-                tap_stats.sent.checkpoint_end++;
                 pthread_mutex_unlock(&tap_stats.mutex);
             } else if (event == TAP_MUTATION) {
                 msg.mutation.message.header.request.opcode = PROTOCOL_BINARY_CMD_TAP_MUTATION;
