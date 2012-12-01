@@ -84,6 +84,7 @@ AC_ARG_ENABLE(sasl_pwdb,
 AS_IF([test "x$enable_sasl_pwdb" = "xyes"],
       [enable_sasl=yes ])
 
+AC_CHECK_LIB([jemalloc], [je_mallctl])
 
 dnl **********************************************************************
 dnl DETECT_SASL_CB_GETCONF
