@@ -822,6 +822,8 @@ const char *state_text(STATE_FUNC state) {
         return "conn_add_tap_client";
     } else if (state == conn_setup_tap_stream) {
         return "conn_setup_tap_stream";
+    } else if (state == conn_add_tap_consumer) {
+        return "conn_add_tap_consumer";
     } else if (state == conn_pending_close) {
         return "conn_pending_close";
     } else if (state == conn_immediate_close) {
@@ -2894,7 +2896,7 @@ static void process_bin_unknown_packet(conn *c) {
     }
 }
 
-static void process_bin_tap_connect(conn *c) {
+static void process_bin_tap_connect(conn *c, bool is_producer) {
     char *packet = (c->rcurr - (c->binary_header.request.bodylen +
                                 sizeof(c->binary_header)));
     protocol_binary_request_tap_connect *req = (void*)packet;
@@ -2908,7 +2910,7 @@ static void process_bin_tap_connect(conn *c) {
     if (c->binary_header.request.extlen == 4) {
         flags = ntohl(req->message.body.flags);
 
-        if (flags & TAP_CONNECT_FLAG_BACKFILL) {
+        if (is_producer && flags & TAP_CONNECT_FLAG_BACKFILL) {
             /* the userdata has to be at least 8 bytes! */
             if (ndata < 8) {
                 settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
@@ -2936,20 +2938,43 @@ static void process_bin_tap_connect(conn *c) {
                                         c->sfd, buffer);
     }
 
-    TAP_ITERATOR iterator = settings.engine.v1->get_tap_iterator(
-        settings.engine.v0, c, key, c->binary_header.request.keylen,
-        flags, data, ndata);
+    if (is_producer) {
+        TAP_ITERATOR iterator = settings.engine.v1->get_tap_iterator(
+            settings.engine.v0, c, key, c->binary_header.request.keylen,
+            flags, data, ndata);
 
-    if (iterator == NULL) {
-        settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
-                                        "%d: FATAL: The engine does not support tap\n",
-                                        c->sfd);
-        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_SUPPORTED, 0);
-        c->write_and_go = conn_closing;
-    } else {
-        c->tap_iterator = iterator;
-        c->which = EV_WRITE;
-        conn_set_state(c, conn_ship_log);
+        if (iterator == NULL) {
+            settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                                            "%d: FATAL: The engine does not support tap\n",
+                                            c->sfd);
+            write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_SUPPORTED, 0);
+            c->write_and_go = conn_closing;
+        } else {
+            c->tap_iterator = iterator;
+            c->which = EV_WRITE;
+            conn_set_state(c, conn_ship_log);
+        }
+    } else { // TAP Consumer
+        ENGINE_ERROR_CODE ret;
+        if (settings.engine.v1->tap_notify != NULL) {
+            ret = settings.engine.v1->tap_notify(settings.engine.v0, c, NULL, 0, 0, flags,
+                                                 TAP_CONSUMER, 0, key,
+                                                 c->binary_header.request.keylen, 0, 0, 0,
+                                                 0, data, ndata, 0, 0);
+            if (ret != ENGINE_SUCCESS) {
+                settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                                                "%d: ERROR: The tap consumer creation failed\n",
+                                                c->sfd);
+                conn_set_state(c, conn_closing);
+            } else {
+                conn_set_state(c, conn_new_cmd);
+            }
+        } else {
+            settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
+                                            "%d: FATAL: The engine does not tap_notify\n",
+                                            c->sfd);
+            conn_set_state(c, conn_closing);
+        }
     }
 }
 
@@ -3077,6 +3102,12 @@ static void process_bin_packet(conn *c) {
         tap_stats.received.connect++;
         pthread_mutex_unlock(&tap_stats.mutex);
         conn_set_state(c, conn_add_tap_client);
+        break;
+    case PROTOCOL_BINARY_CMD_TAP_CONNECT_CONSUMER:
+        pthread_mutex_lock(&tap_stats.mutex);
+        tap_stats.received.connect++;
+        pthread_mutex_unlock(&tap_stats.mutex);
+        conn_set_state(c, conn_add_tap_consumer);
         break;
     case PROTOCOL_BINARY_CMD_TAP_MUTATION:
         pthread_mutex_lock(&tap_stats.mutex);
@@ -5905,7 +5936,12 @@ bool conn_add_tap_client(conn *c) {
 }
 
 bool conn_setup_tap_stream(conn *c) {
-    process_bin_tap_connect(c);
+    process_bin_tap_connect(c, true);
+    return true;
+}
+
+bool conn_add_tap_consumer(conn *c) {
+    process_bin_tap_connect(c, false);
     return true;
 }
 

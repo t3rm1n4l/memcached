@@ -144,7 +144,9 @@ extern "C" {
                    TAP_NOOP,
                    TAP_PAUSE,
                    TAP_CHECKPOINT_START,
-                   TAP_CHECKPOINT_END } tap_event_t;
+                   TAP_CHECKPOINT_END,
+                   TAP_CONSUMER
+    } tap_event_t;
 
     /**
      * An iterator for the tap stream.
