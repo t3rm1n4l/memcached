@@ -2595,6 +2595,7 @@ static bool binary_response_handler(const void *key, uint16_t keylen,
  */
 struct tap_cmd_stats {
     uint64_t connect;
+    uint64_t connect_consumer;
     uint64_t mutation;
     uint64_t checkpoint_start;
     uint64_t checkpoint_end;
@@ -3105,7 +3106,7 @@ static void process_bin_packet(conn *c) {
         break;
     case PROTOCOL_BINARY_CMD_TAP_CONNECT_CONSUMER:
         pthread_mutex_lock(&tap_stats.mutex);
-        tap_stats.received.connect++;
+        tap_stats.received.connect_consumer++;
         pthread_mutex_unlock(&tap_stats.mutex);
         conn_set_state(c, conn_add_tap_consumer);
         break;
@@ -4138,6 +4139,9 @@ static void server_stats(ADD_STAT add_stats, conn *c, bool aggregate) {
     }
     if (ts.received.connect) {
         APPEND_STAT("tap_connect_received", "%"PRIu64, ts.received.connect);
+    }
+    if (ts.received.connect_consumer) {
+        APPEND_STAT("tap_connect_consumer_received", "%"PRIu64, ts.received.connect_consumer);
     }
     if (ts.received.mutation) {
         APPEND_STAT("tap_mutation_received", "%"PRIu64, ts.received.mutation);
