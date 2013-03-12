@@ -60,6 +60,8 @@ static int nthreads;
 static LIBEVENT_THREAD *threads;
 static pthread_t *thread_ids;
 LIBEVENT_THREAD *tap_thread;
+/* Count of pending new connections in each worker thread */
+static volatile int *new_conn_count;
 
 /*
  * Number of worker threads that have finished setting themselves up.
@@ -338,6 +340,7 @@ static void thread_libevent_process(int fd, short which, void *arg) {
     }
 
     while ((item = cq_pop(me->new_conn_queue)) != NULL) {
+        (void)__sync_fetch_and_add(&new_conn_count[me->index], -1);
         conn *c = conn_new(item->sfd, item->init_state, item->event_flags,
                            item->read_buffer_size, item->transport, me->base,
                            NULL);
@@ -685,6 +688,33 @@ void notify_io_complete(const void *cookie, ENGINE_ERROR_CODE status)
 static int last_thread = -1;
 
 /*
+ * Find thread to assign a new connection.
+ * We try to ensure equal distribution, so that slower threads do not accumulate
+ * huge backlog.
+ */
+static int get_thread_for_new_conn() {
+    int tid = (last_thread + 1) % settings.num_threads;
+    int return_tid = tid;
+    int stop_tid = last_thread;
+    int min;
+
+    if (new_conn_count[tid] != 0) {
+        min = new_conn_count[tid];
+        do {
+            tid = (tid + 1) % settings.num_threads;
+            if (new_conn_count[tid] < min) {
+                min = new_conn_count[tid];
+                return_tid = tid;
+            }
+        } while (tid != stop_tid); 
+    }
+
+    (void)__sync_fetch_and_add(&new_conn_count[return_tid], 1);
+    last_thread = return_tid;
+    return return_tid;
+}
+
+/*
  * Dispatches a new connection to another thread. This is only ever called
  * from the main thread, either during initialization (for UDP) or because
  * of an incoming connection.
@@ -692,11 +722,10 @@ static int last_thread = -1;
 void dispatch_conn_new(SOCKET sfd, STATE_FUNC init_state, int event_flags,
                        int read_buffer_size, enum network_transport transport) {
     CQ_ITEM *item = cqi_new();
-    int tid = (last_thread + 1) % settings.num_threads;
+    int tid = get_thread_for_new_conn();
 
     LIBEVENT_THREAD *thread = threads + tid;
 
-    last_thread = tid;
 
     item->sfd = sfd;
     item->init_state = init_state;
@@ -851,6 +880,7 @@ void thread_init(int nthr, struct event_base *main_base,
         exit(1);
     }
 
+    new_conn_count = calloc(nthr, sizeof(int));
     setup_dispatcher(main_base, dispatcher_callback);
 
     for (i = 0; i < nthreads; i++) {
