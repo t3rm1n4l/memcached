@@ -1978,6 +1978,9 @@ static void process_bin_get(conn *c) {
     case ENGINE_NOT_MY_VBUCKET:
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_NOT_MY_VBUCKET, 0);
         break;
+    case ENGINE_TMPFAIL:
+        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ETMPFAIL, 0);
+        break;
     default:
         /* @todo add proper error handling! */
         settings.extensions.logger->log(EXTENSION_LOG_WARNING, c,
@@ -2889,6 +2892,8 @@ static void process_bin_unknown_packet(conn *c) {
         }
     } else if (ret == ENGINE_ENOTSUP) {
         write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_UNKNOWN_COMMAND, 0);
+    } else if (ret == ENGINE_TMPFAIL) {
+        write_bin_packet(c, PROTOCOL_BINARY_RESPONSE_ETMPFAIL, 0);
     } else if (ret == ENGINE_EWOULDBLOCK) {
         c->ewouldblock = true;
     } else {
@@ -4981,6 +4986,9 @@ static char* process_command(conn *c, char *command) {
             }
         }
 
+        ENGINE_ERROR_CODE ret_code = c->aiostat;
+        c->aiostat = ENGINE_SUCCESS;
+
         for (cmd = settings.extensions.ascii; cmd != NULL; cmd = cmd->next) {
             if (cmd->accept(cmd->cookie, c, ntokens, tokens, &nbytes, &ptr)) {
                 conn_set_extension_str(c, tokens[0].value);
@@ -4991,25 +4999,30 @@ static char* process_command(conn *c, char *command) {
         if (cmd == NULL) {
             out_string(c, "ERROR unknown command");
         } else if (nbytes == 0) {
-            switch (cmd->execute(cmd->cookie, c, ntokens, tokens,
-                                 ascii_response_handler)) {
-            case ENGINE_SUCCESS:
-                if (c->dynamic_buffer.buffer != NULL) {
-                    write_and_free(c, c->dynamic_buffer.buffer,
-                                   c->dynamic_buffer.offset);
-                    c->dynamic_buffer.buffer = NULL;
-                } else {
-                    conn_set_state(c, conn_new_cmd);
-                }
-                break;
-            case ENGINE_EWOULDBLOCK:
-                c->ewouldblock = true;
-                ret = tokens[KEY_TOKEN].value;;
-                break;
-            case ENGINE_DISCONNECT:
-            default:
-                conn_set_state(c, conn_closing);
-
+            if (ret_code == ENGINE_SUCCESS) {
+                ret_code = cmd->execute(cmd->cookie, c, ntokens, tokens,
+                        ascii_response_handler);
+            }
+            switch (ret_code) {
+                case ENGINE_SUCCESS:
+                    if (c->dynamic_buffer.buffer != NULL) {
+                        write_and_free(c, c->dynamic_buffer.buffer,
+                                c->dynamic_buffer.offset);
+                        c->dynamic_buffer.buffer = NULL;
+                    } else {
+                        conn_set_state(c, conn_new_cmd);
+                    }
+                    break;
+                case ENGINE_EWOULDBLOCK:
+                    c->ewouldblock = true;
+                    ret = tokens[KEY_TOKEN].value;;
+                    break;
+                case ENGINE_TMPFAIL:
+                    out_string(c, "SERVER_ERROR temporary failure");
+                    break;
+                case ENGINE_DISCONNECT:
+                default:
+                    conn_set_state(c, conn_closing);
             }
         } else {
             c->rlbytes = nbytes;
